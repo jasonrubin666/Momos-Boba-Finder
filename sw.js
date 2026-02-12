@@ -1,4 +1,4 @@
-const CACHE_NAME = 'boba-finder-v2';
+const CACHE_NAME = 'boba-finder-v3';
 const PRECACHE = [
   './',
   './index.html',

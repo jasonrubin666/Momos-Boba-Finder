@@ -294,13 +294,13 @@
 
     /* ===== ERROR STATE ===== */
     .error-card {
-      position: fixed; top: 80px; left: 16px; right: 16px;
+      position: fixed; left: 16px; right: 16px;
       background: rgba(233, 69, 96, 0.15);
       border: 1px solid rgba(233, 69, 96, 0.3);
       border-radius: var(--radius-sm);
-      padding: 14px 18px;
+      padding: 10px 14px;
       z-index: 800;
-      font-size: 13.5px;
+      font-size: 12px;
       color: #ff8fa3;
       text-align: center;
       animation: slide-down 0.4s ease;
@@ -402,7 +402,7 @@
     <div class="header">
       <div class="header-icon">🧋</div>
       <div class="header-text">
-        <h1>Boba Finder</h1>
+        <h1>Boba Finder <span style="font-size:10px;color:var(--tea-green);font-weight:400">v3</span></h1>
         <p id="location-label">Searching nearby…</p>
       </div>
       <button class="header-refresh" id="refreshBtn" title="Refresh">
@@ -487,7 +487,7 @@
       });
 
       // Dark tile layer
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
         maxZoom: 19,
         subdomains: 'abcd'
       }).addTo(map);
@@ -529,21 +529,25 @@
         fitBounds();
         reverseGeocode();
       } else if (places.length === 0) {
-        showError('No boba places found nearby. Try searching "boba near me" in Google Maps!');
+        showError('No boba found nearby via OpenStreetMap. Tried ' + OVERPASS_ENDPOINTS.length + ' Overpass mirrors + Nominatim. Tap refresh to retry.');
         document.getElementById('placeCount').textContent = '0';
         reverseGeocode();
       }
     }
 
     async function tryOverpass() {
-      const query = `[out:json][timeout:15];(node["cuisine"~"bubble_tea|boba"](around:${SEARCH_RADIUS},${userLat},${userLng});node["drink"~"bubble_tea|boba"](around:${SEARCH_RADIUS},${userLat},${userLng});node["name"~"boba|bubble tea|milk tea|kung fu tea|happy lemon|gong cha|tea bar|tiger sugar|the alley|coco|onezo|tpumps|boba guys|boba tea|tea house",i]["amenity"~"cafe|restaurant|fast_food"](around:${SEARCH_RADIUS},${userLat},${userLng});node["name"~"boba|bubble tea|milk tea",i]["shop"](around:${SEARCH_RADIUS},${userLat},${userLng});way["cuisine"~"bubble_tea|boba"](around:${SEARCH_RADIUS},${userLat},${userLng});way["name"~"boba|bubble tea|milk tea|kung fu tea|happy lemon|gong cha|tea bar|tiger sugar",i]["amenity"~"cafe|restaurant|fast_food"](around:${SEARCH_RADIUS},${userLat},${userLng}););out center body;`;
+      // Keep query short for GET URL limits
+      const q = `[out:json][timeout:20];(node["cuisine"~"bubble_tea|boba"](around:${SEARCH_RADIUS},${userLat},${userLng});node["name"~"boba|bubble.tea|milk.tea",i]["amenity"](around:${SEARCH_RADIUS},${userLat},${userLng});way["cuisine"~"bubble_tea|boba"](around:${SEARCH_RADIUS},${userLat},${userLng}););out center body;`;
 
       for (const endpoint of OVERPASS_ENDPOINTS) {
         try {
-          const url = endpoint + '?data=' + encodeURIComponent(query);
-          const resp = await fetch(url);
-          if (!resp.ok) continue;
+          console.log('Trying:', endpoint);
+          const url = endpoint + '?data=' + encodeURIComponent(q);
+          const resp = await fetch(url, { mode: 'cors' });
+          console.log('Response status:', resp.status);
+          if (!resp.ok) { console.warn('Bad status', resp.status); continue; }
           const data = await resp.json();
+          console.log('Got elements:', data.elements?.length);
           places = (data.elements || [])
             .map(el => {
               const lat = el.lat || el.center?.lat;
@@ -555,8 +559,6 @@
                 addr: [el.tags?.['addr:housenumber'], el.tags?.['addr:street'], el.tags?.['addr:city']].filter(Boolean).join(' ') || '',
                 dist: haversine(userLat, userLng, lat, lng),
                 hours: el.tags?.opening_hours || '',
-                phone: el.tags?.phone || el.tags?.['contact:phone'] || '',
-                website: el.tags?.website || el.tags?.['contact:website'] || ''
               };
             })
             .filter(Boolean)
@@ -564,7 +566,8 @@
             .slice(0, 20);
           return true;
         } catch (e) {
-          console.warn('Overpass endpoint failed:', endpoint, e);
+          console.warn('Endpoint failed:', endpoint, e.message);
+          showError('API: ' + endpoint.split('/')[2] + ' → ' + e.message);
           continue;
         }
       }
@@ -572,40 +575,36 @@
     }
 
     async function tryNominatim() {
-      try {
-        const searches = ['boba tea', 'bubble tea', 'milk tea'];
-        const allResults = [];
-        for (const term of searches) {
-          try {
-            const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(term)}&format=json&limit=10&viewbox=${userLng-0.05},${userLat+0.05},${userLng+0.05},${userLat-0.05}&bounded=1`;
-            const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
-            if (!resp.ok) continue;
-            const data = await resp.json();
-            allResults.push(...data);
-          } catch(e) { continue; }
-        }
-        const seen = new Set();
-        places = allResults
-          .map(r => {
-            const lat = parseFloat(r.lat);
-            const lng = parseFloat(r.lon);
-            const key = r.display_name + lat.toFixed(4);
-            if (seen.has(key)) return null;
-            seen.add(key);
-            const name = r.display_name.split(',')[0];
-            const addr = r.display_name.split(',').slice(1, 3).join(',').trim();
-            return { name, lat, lng, addr, dist: haversine(userLat, userLng, lat, lng), hours: '', phone: '', website: '' };
-          })
-          .filter(Boolean)
-          .filter(p => p.dist <= SEARCH_RADIUS)
-          .sort((a, b) => a.dist - b.dist)
-          .slice(0, 20);
-        return true;
-      } catch (err) {
-        console.error('Nominatim failed:', err);
-        showError('Could not search for boba places. Check your internet connection.');
-        return false;
+      const searches = ['boba tea', 'bubble tea', 'milk tea'];
+      const allResults = [];
+      for (const term of searches) {
+        try {
+          const url = 'https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(term + ' near ' + userLat + ',' + userLng) + '&format=json&limit=10&bounded=1&viewbox=' + (userLng-0.06) + ',' + (userLat+0.06) + ',' + (userLng+0.06) + ',' + (userLat-0.06);
+          console.log('Nominatim:', url);
+          const resp = await fetch(url, { headers: { 'User-Agent': 'BobaFinder/1.0' } });
+          if (!resp.ok) continue;
+          const data = await resp.json();
+          console.log('Nominatim results for', term, ':', data.length);
+          allResults.push(...data);
+        } catch(e) { console.warn('Nominatim fail:', e.message); continue; }
       }
+      const seen = new Set();
+      places = allResults
+        .map(r => {
+          const lat = parseFloat(r.lat);
+          const lng = parseFloat(r.lon);
+          const key = (r.name || r.display_name) + lat.toFixed(4);
+          if (seen.has(key)) return null;
+          seen.add(key);
+          const name = r.display_name.split(',')[0];
+          const addr = r.display_name.split(',').slice(1, 3).join(',').trim();
+          return { name, lat, lng, addr, dist: haversine(userLat, userLng, lat, lng), hours: '' };
+        })
+        .filter(Boolean)
+        .filter(p => p.dist <= SEARCH_RADIUS)
+        .sort((a, b) => a.dist - b.dist)
+        .slice(0, 20);
+      return places.length > 0;
     }
 
     // ===== RENDERING =====
@@ -762,14 +761,15 @@
       document.getElementById('app').classList.add('visible');
     }
 
+    let errorCount = 0;
     function showError(msg) {
-      const existing = document.querySelector('.error-card');
-      if (existing) existing.remove();
       const el = document.createElement('div');
       el.className = 'error-card';
+      el.style.top = (80 + errorCount * 48) + 'px';
       el.textContent = msg;
       document.getElementById('app').appendChild(el);
-      setTimeout(() => el.remove(), 8000);
+      errorCount++;
+      setTimeout(() => { el.remove(); errorCount = Math.max(0, errorCount - 1); }, 12000);
     }
 
     async function reverseGeocode() {
