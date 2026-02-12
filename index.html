@@ -430,7 +430,6 @@
 
   <script>
     // ===== CONFIG =====
-    const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
     const SEARCH_RADIUS = 5000; // meters
 
     let map, userLat, userLng;
@@ -511,68 +510,101 @@
         .bindPopup('<div class="popup-name">📍 You are here</div>');
     }
 
-    // ===== BOBA SEARCH (Overpass API) =====
+    // ===== BOBA SEARCH =====
+    const OVERPASS_ENDPOINTS = [
+      'https://overpass-api.de/api/interpreter',
+      'https://overpass.kumi.systems/api/interpreter',
+      'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
+    ];
+
     async function findBoba() {
-      const query = `
-        [out:json][timeout:15];
-        (
-          node["cuisine"~"bubble_tea|boba"](around:${SEARCH_RADIUS},${userLat},${userLng});
-          node["drink"~"bubble_tea|boba"](around:${SEARCH_RADIUS},${userLat},${userLng});
-          node["name"~"boba|bubble tea|milk tea|kung fu tea|happy lemon|gong cha|tea bar|tiger sugar|the alley|coco|onezo|kung fu|tpumps|boba guys|boba tea",i]["amenity"~"cafe|restaurant|fast_food"](around:${SEARCH_RADIUS},${userLat},${userLng});
-          node["name"~"boba|bubble tea|milk tea|tea house",i]["shop"](around:${SEARCH_RADIUS},${userLat},${userLng});
-          way["cuisine"~"bubble_tea|boba"](around:${SEARCH_RADIUS},${userLat},${userLng});
-          way["name"~"boba|bubble tea|milk tea|kung fu tea|happy lemon|gong cha|tea bar|tiger sugar",i]["amenity"~"cafe|restaurant|fast_food"](around:${SEARCH_RADIUS},${userLat},${userLng});
-        );
-        out center body;
-      `;
-
-      try {
-        const resp = await fetch(OVERPASS_URL, {
-          method: 'POST',
-          body: 'data=' + encodeURIComponent(query),
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-        });
-        const data = await resp.json();
-
-        places = data.elements
-          .map(el => {
-            const lat = el.lat || el.center?.lat;
-            const lng = el.lon || el.center?.lon;
-            if (!lat || !lng) return null;
-            const name = el.tags?.name || 'Boba Shop';
-            const addr = [
-              el.tags?.['addr:housenumber'],
-              el.tags?.['addr:street'],
-              el.tags?.['addr:city']
-            ].filter(Boolean).join(' ') || '';
-            const dist = haversine(userLat, userLng, lat, lng);
-            const hours = el.tags?.opening_hours || '';
-            const phone = el.tags?.phone || el.tags?.['contact:phone'] || '';
-            const website = el.tags?.website || el.tags?.['contact:website'] || '';
-
-            return { name, lat, lng, addr, dist, hours, phone, website };
-          })
-          .filter(Boolean)
-          .sort((a, b) => a.dist - b.dist)
-          .slice(0, 20);
-
-        if (places.length === 0) {
-          // Broader fallback: search for any tea house / cafe with "tea" in name
-          showError('No boba-specific places found via OpenStreetMap. Try searching "boba near me" in Google Maps for the most complete results!');
-          document.getElementById('placeCount').textContent = '0';
-          return;
-        }
-
+      document.getElementById('location-label').textContent = 'Searching for boba…';
+      let found = await tryOverpass();
+      if (!found) {
+        found = await tryNominatim();
+      }
+      if (found && places.length > 0) {
         renderPlaces();
         renderMarkers();
         fitBounds();
-
-        // Reverse geocode for location label
         reverseGeocode();
+      } else if (places.length === 0) {
+        showError('No boba places found nearby. Try searching "boba near me" in Google Maps!');
+        document.getElementById('placeCount').textContent = '0';
+        reverseGeocode();
+      }
+    }
 
+    async function tryOverpass() {
+      const query = `[out:json][timeout:15];(node["cuisine"~"bubble_tea|boba"](around:${SEARCH_RADIUS},${userLat},${userLng});node["drink"~"bubble_tea|boba"](around:${SEARCH_RADIUS},${userLat},${userLng});node["name"~"boba|bubble tea|milk tea|kung fu tea|happy lemon|gong cha|tea bar|tiger sugar|the alley|coco|onezo|tpumps|boba guys|boba tea|tea house",i]["amenity"~"cafe|restaurant|fast_food"](around:${SEARCH_RADIUS},${userLat},${userLng});node["name"~"boba|bubble tea|milk tea",i]["shop"](around:${SEARCH_RADIUS},${userLat},${userLng});way["cuisine"~"bubble_tea|boba"](around:${SEARCH_RADIUS},${userLat},${userLng});way["name"~"boba|bubble tea|milk tea|kung fu tea|happy lemon|gong cha|tea bar|tiger sugar",i]["amenity"~"cafe|restaurant|fast_food"](around:${SEARCH_RADIUS},${userLat},${userLng}););out center body;`;
+
+      for (const endpoint of OVERPASS_ENDPOINTS) {
+        try {
+          const url = endpoint + '?data=' + encodeURIComponent(query);
+          const resp = await fetch(url);
+          if (!resp.ok) continue;
+          const data = await resp.json();
+          places = (data.elements || [])
+            .map(el => {
+              const lat = el.lat || el.center?.lat;
+              const lng = el.lon || el.center?.lon;
+              if (!lat || !lng) return null;
+              return {
+                name: el.tags?.name || 'Boba Shop',
+                lat, lng,
+                addr: [el.tags?.['addr:housenumber'], el.tags?.['addr:street'], el.tags?.['addr:city']].filter(Boolean).join(' ') || '',
+                dist: haversine(userLat, userLng, lat, lng),
+                hours: el.tags?.opening_hours || '',
+                phone: el.tags?.phone || el.tags?.['contact:phone'] || '',
+                website: el.tags?.website || el.tags?.['contact:website'] || ''
+              };
+            })
+            .filter(Boolean)
+            .sort((a, b) => a.dist - b.dist)
+            .slice(0, 20);
+          return true;
+        } catch (e) {
+          console.warn('Overpass endpoint failed:', endpoint, e);
+          continue;
+        }
+      }
+      return false;
+    }
+
+    async function tryNominatim() {
+      try {
+        const searches = ['boba tea', 'bubble tea', 'milk tea'];
+        const allResults = [];
+        for (const term of searches) {
+          try {
+            const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(term)}&format=json&limit=10&viewbox=${userLng-0.05},${userLat+0.05},${userLng+0.05},${userLat-0.05}&bounded=1`;
+            const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+            if (!resp.ok) continue;
+            const data = await resp.json();
+            allResults.push(...data);
+          } catch(e) { continue; }
+        }
+        const seen = new Set();
+        places = allResults
+          .map(r => {
+            const lat = parseFloat(r.lat);
+            const lng = parseFloat(r.lon);
+            const key = r.display_name + lat.toFixed(4);
+            if (seen.has(key)) return null;
+            seen.add(key);
+            const name = r.display_name.split(',')[0];
+            const addr = r.display_name.split(',').slice(1, 3).join(',').trim();
+            return { name, lat, lng, addr, dist: haversine(userLat, userLng, lat, lng), hours: '', phone: '', website: '' };
+          })
+          .filter(Boolean)
+          .filter(p => p.dist <= SEARCH_RADIUS)
+          .sort((a, b) => a.dist - b.dist)
+          .slice(0, 20);
+        return true;
       } catch (err) {
-        console.error(err);
+        console.error('Nominatim failed:', err);
         showError('Could not search for boba places. Check your internet connection.');
+        return false;
       }
     }
 

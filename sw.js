@@ -1,4 +1,4 @@
-const CACHE_NAME = 'boba-finder-v1';
+const CACHE_NAME = 'boba-finder-v2';
 const PRECACHE = [
   './',
   './index.html',
@@ -28,7 +28,7 @@ self.addEventListener('fetch', event => {
   const { request } = event;
 
   // Network-first for API calls
-  if (request.url.includes('overpass-api') || request.url.includes('nominatim')) {
+  if (request.url.includes('overpass') || request.url.includes('nominatim')) {
     event.respondWith(
       fetch(request)
         .then(resp => {
